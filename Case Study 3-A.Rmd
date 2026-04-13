@@ -1,0 +1,826 @@
+---
+title: "Case Study 3"
+author: "Vanessa Gonzales, Makayla Byas, Sara Nishiyama"
+date: "2026-03-31"
+output: html_document
+---
+
+```{r}
+library(ggplot2)
+```
+
+
+# Data Prep and Train/Test Split 
+
+```{r}
+library(dplyr)
+
+
+dow <- read.csv("dow_jones_index.data", header = TRUE)
+
+
+price_cols <- c("open", "high", "low", "close", "next_weeks_open", "next_weeks_close")
+dow <- dow |> mutate(across(all_of(price_cols), ~ as.numeric(gsub("\\$", "", .))))
+
+dow$date <- as.Date(dow$date, format = "%m/%d/%Y")
+
+
+dow <- na.omit(dow)
+
+# For each stock, sort by date and create a new variable that carries forward last week's price change, so the model can use recent history as a predictor.
+
+# Stock prices do not exist in isolation, what happened last week may influence what happens next week. By creating lagged variables, we are giving the model access to recent historical information that it would realistically have available at the time of investment. For example, a stock that experienced a large price change last week may exhibit momentum or mean-reversion behavior in the following week. Including lag_percent_change_price as a predictor allows the model to capture these patterns, potentially improving prediction accuracy over using only current week variables. This approach is also consistent with the real-world constraint of the dataset — since we can only act on data after the week has ended, lagged variables represent information that would genuinely be available to an investor at decision time.
+
+dow <- dow |>
+  group_by(stock) |>
+  arrange(stock, date) |>
+  mutate(lag_percent_change_price = lag(percent_change_price, 1)) |>
+  ungroup()
+
+
+train_base <- subset(dow, quarter == 1)
+test_base  <- subset(dow, quarter == 2)
+
+dow_lag    <- na.omit(dow)
+train_lag  <- subset(dow_lag, quarter == 1)
+test_lag   <- subset(dow_lag, quarter == 2)
+```
+
+```{r}
+dow |>
+  filter(stock == "AA") |>
+  select(stock, date, percent_change_price, lag_percent_change_price) |>
+  head(10)
+```
+
+
+
+```{r}
+str(dow)
+```
+```{r}
+nrow(train_base)
+nrow(test_base)
+nrow(train_lag)
+nrow(test_lag)
+```
+
+```{r}
+stocks <- unique(train_base$stock)
+
+results <- data.frame(
+  LM  = rep(NA, length(stocks)),
+  DT  = rep(NA, length(stocks)),
+  SVR = rep(NA, length(stocks)),
+  row.names = stocks
+)
+```
+
+
+
+
+
+
+# LM RUN 1
+
+Run 1 (Brown et al. baseline):
+
+percent_change_price
+percent_change_volume_over_last_wk
+days_to_next_dividend
+percent_return_next_dividend
+
+```{r}
+for(i in seq_along(stocks)){
+  stock_name <- stocks[i]
+  
+  train_stock <- subset(train_base, stock == stock_name)
+  test_stock  <- subset(test_base, stock == stock_name)
+  
+ 
+  lm_model <- lm(percent_change_next_weeks_price ~ 
+                   percent_change_price + 
+                   percent_change_volume_over_last_wk + 
+                   days_to_next_dividend + 
+                   percent_return_next_dividend,
+                 data = train_stock)
+  
+ 
+  lm_pred <- predict(lm_model, newdata = test_stock)
+  
+  
+  results$LM[i] <- sqrt(mean((test_stock$percent_change_next_weeks_price - lm_pred)^2))
+}
+
+data.frame(stock = stocks, LM_RMSE = results$LM)
+```
+
+
+# LR RUN 2
+
+Run 2 (Run 1 + lag):
+
+percent_change_price
+percent_change_volume_over_last_wk
+days_to_next_dividend
+percent_return_next_dividend
+lag_percent_change_price
+
+```{r}
+results$LM_run2 <- NA
+
+for(i in seq_along(stocks)){
+  stock_name <- stocks[i]
+  
+  train_stock <- subset(train_lag, stock == stock_name)
+  test_stock  <- subset(test_lag, stock == stock_name)
+  
+  lm_model2 <- lm(percent_change_next_weeks_price ~ 
+                   percent_change_price + 
+                   percent_change_volume_over_last_wk + 
+                   days_to_next_dividend + 
+                   percent_return_next_dividend +
+                   lag_percent_change_price,
+                 data = train_stock)
+  
+  lm_pred2 <- predict(lm_model2, newdata = test_stock)
+  
+  results$LM_run2[i] <- sqrt(mean((test_stock$percent_change_next_weeks_price - lm_pred2)^2))
+}
+
+data.frame(stock = stocks, LM_run1 = results$LM, LM_run2 = results$LM_run2)
+```
+
+# LM RUN 3
+
+volume
+close
+percent_change_price
+
+
+```{r}
+results$LM_run3 <- NA
+
+for(i in seq_along(stocks)){
+  stock_name <- stocks[i]
+  
+  train_stock <- subset(train_base, stock == stock_name)
+  test_stock  <- subset(test_base, stock == stock_name)
+  
+  lm_model3 <- lm(percent_change_next_weeks_price ~ 
+                   volume +
+                   close +
+                   percent_change_price,
+                 data = train_stock)
+  
+  lm_pred3 <- predict(lm_model3, newdata = test_stock)
+  
+  results$LM_run3[i] <- sqrt(mean((test_stock$percent_change_next_weeks_price - lm_pred3)^2))
+}
+
+data.frame(stock = stocks, LM_run1 = results$LM, LM_run2 = results$LM_run2, LM_run3 = results$LM_run3)
+
+```
+
+# LR RESULTS 
+
+```{r}
+lm_results <- data.frame(stock = stocks, RMSE = results$LM)
+```
+
+
+
+```{r}
+lm_results_all <- data.frame(
+  stock   = stocks,
+  Run1    = results$LM,
+  Run2    = results$LM_run2,
+  Run3    = results$LM_run3
+)
+```
+
+```{r}
+print(lm_results_all)
+```
+```{r}
+library(ggplot2)
+library(tidyr)
+
+# Remove CSCO
+lm_results_all <- data.frame(
+  stock   = stocks,
+  Run1    = results$LM,
+  Run2    = results$LM_run2,
+  Run3    = results$LM_run3
+)
+
+lm_no_csco <- subset(lm_results_all, stock != "CSCO")
+
+# Reshape to long format for ggplot
+lm_long <- pivot_longer(lm_no_csco, cols = c("Run1", "Run2", "Run3"), 
+                         names_to = "Model_Run", values_to = "RMSE")
+
+# Plot
+ggplot(lm_long, aes(x = stock, y = RMSE, fill = Model_Run)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Run1" = "steelblue", "Run2" = "orange", "Run3" = "darkgreen")) +
+  labs(title = "Linear Regression RMSE by Stock and Run",
+       subtitle = "CSCO excluded (outlier) — Run1: Brown et al. | Run2: With Lag | Run3: Volume & Close",
+       x = "Stock", y = "RMSE", fill = "Model Run") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(face = "bold", size = 14),
+        plot.subtitle = element_text(size = 9, color = "gray50"))
+```
+
+
+## correlation plot results 
+Strongest predictors:
+
+previous_weeks_volume (0.15) — weak but the strongest predictor
+percent_return_next_dividend (0.11) — makes sense, dividend returns attract investors
+close (0.12) — closing price has some signal
+
+Weakest predictors:
+
+percent_change_price (0.01) — almost no linear relationship with next week's return
+days_to_next_dividend (-0.01) — essentially zero correlation
+percent_change_volume_over_last_wk (0.04) — very weak
+
+volume and previous_weeks_volume are highly correlated (0.86), meaning they carry almost the same information. Using both in the same model would cause multicollinearity
+```{r}
+cor(train_base[, c("percent_change_next_weeks_price", 
+                    "percent_change_price",
+                    "volume", "close",
+                    "days_to_next_dividend",
+                    "percent_return_next_dividend",
+                    "percent_change_volume_over_last_wk")])
+
+
+library(corrplot)
+
+
+cor_data <- train_base[, c("percent_change_next_weeks_price",
+                            "percent_change_price",
+                            "volume",
+                            "close",
+                            "days_to_next_dividend",
+                            "percent_return_next_dividend",
+                            "percent_change_volume_over_last_wk",
+                            "previous_weeks_volume")]
+
+
+cor_matrix <- cor(cor_data, use = "complete.obs")
+
+
+corrplot(cor_matrix, 
+         method = "color",
+         type = "upper",
+         tl.cex = 0.8,
+         addCoef.col = "black",
+         number.cex = 0.7,
+         title = "Correlation Matrix of Predictors",
+         mar = c(0,0,1,0))
+```
+
+
+# LR Visuals 
+
+## Run 1
+```{r}
+
+lm_results_sorted <- lm_results[order(lm_results$RMSE, decreasing = TRUE), ]
+
+top15    <- head(lm_results_sorted, 15)
+bottom15 <- tail(lm_results_sorted, 15)
+
+# 15 lowest RMSE
+ggplot(bottom15, aes(x = reorder(stock, -RMSE), y = RMSE, fill = RMSE)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "red", high = "orange") +
+  geom_text(aes(label = round(RMSE, 2)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  labs(title = "15 Lowest RMSE - Linear Regression",
+       subtitle = "Easiest stocks to predict",
+       x = "Stock", y = "RMSE") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  expand_limits(y = max(bottom15$RMSE) * 1.1)
+
+# Top 15 highest RMSE
+ggplot(top15, aes(x = reorder(stock, RMSE), y = RMSE, fill = RMSE)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "steelblue", high = "lightblue") +
+  geom_text(aes(label = round(RMSE, 2)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  labs(title = "15 Highest RMSE - Linear Regression",
+       subtitle = "Hardest stocks to predict",
+       x = "Stock", y = "RMSE") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  expand_limits(y = max(top15$RMSE) * 1.1)
+
+
+```
+
+## Run 3
+
+```{r}
+lm_results <- data.frame(stock = stocks, RMSE = results$LM_run3)
+
+lm_results_sorted <- lm_results[order(lm_results$RMSE, decreasing = TRUE), ]
+top15    <- head(lm_results_sorted, 15)
+bottom15 <- tail(lm_results_sorted, 15)
+
+ggplot(bottom15, aes(x = reorder(stock, -RMSE), y = RMSE, fill = RMSE)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "#ba0adb", high = "#e97ead") +
+  geom_text(aes(label = round(RMSE, 2)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  labs(title = "15 Lowest RMSE - Linear Regression Run 3",
+       subtitle = "Easiest stocks to predict",
+       x = "Stock", y = "RMSE") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  expand_limits(y = max(bottom15$RMSE) * 1.1)
+
+# Top 15 highest RMSE
+ggplot(top15, aes(x = reorder(stock, RMSE), y = RMSE, fill = RMSE)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "#0a57db", high = "lightblue") +
+  geom_text(aes(label = round(RMSE, 2)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  labs(title = "15 Highest RMSE - Linear Regression Run 3",
+       subtitle = "Hardest stocks to predict",
+       x = "Stock", y = "RMSE") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  expand_limits(y = max(top15$RMSE) * 1.1)
+```
+
+
+# Makayla
+
+### Decision Tree Model
+```{r}
+library(rpart)
+
+results$DT_run1 <- NA
+results$DT_run2 <- NA
+results$DT_run3 <- NA
+```
+
+
+### DT LOOP
+```{r}
+for(i in seq_along(stocks)){
+  
+  stock_name <- stocks[i]
+  
+  train_stock <- subset(train_base, stock == stock_name)
+  test_stock  <- subset(test_base,  stock == stock_name)
+  
+  train_lag_s <- subset(train_lag, stock == stock_name)
+  test_lag_s  <- subset(test_lag,  stock == stock_name)
+  
+  # -------------------------
+  # RUN 1 (Baseline DT)
+  # -------------------------
+  
+  dt1 <- rpart(percent_change_next_weeks_price ~ 
+                 percent_change_price + 
+                 percent_change_volume_over_last_wk + 
+                 days_to_next_dividend + 
+                 percent_return_next_dividend,
+               data = train_stock,
+               method = "anova")
+  
+  pred1 <- predict(dt1, test_stock)
+  
+  results$DT_run1[i] <- sqrt(mean(
+    (test_stock$percent_change_next_weeks_price - pred1)^2,
+    na.rm = TRUE
+  ))
+  
+  # -------------------------
+  # RUN 2 (With Lag)
+  # -------------------------
+  
+  dt2 <- rpart(percent_change_next_weeks_price ~ 
+                 percent_change_price + 
+                 percent_change_volume_over_last_wk + 
+                 days_to_next_dividend + 
+                 percent_return_next_dividend +
+                 lag_percent_change_price,
+               data = train_lag_s,
+               method = "anova")
+  
+  pred2 <- predict(dt2, test_lag_s)
+  
+  results$DT_run2[i] <- sqrt(mean(
+    (test_lag_s$percent_change_next_weeks_price - pred2)^2,
+    na.rm = TRUE
+  ))
+  
+  # -------------------------
+  # RUN 3 (Simple Features)
+  # -------------------------
+  
+  dt3 <- rpart(percent_change_next_weeks_price ~ 
+               volume + close + percent_change_price +
+               percent_change_volume_over_last_wk,
+             data = train_stock,
+             method = "anova")
+  
+  pred3 <- predict(dt3, test_stock)
+  
+  results$DT_run3[i] <- sqrt(mean(
+    (test_stock$percent_change_next_weeks_price - pred3)^2,
+    na.rm = TRUE
+  ))
+}
+```
+
+### Results
+```{r}
+dt_results_all <- data.frame(
+  stock = stocks,
+  Run1  = results$DT_run1,
+  Run2  = results$DT_run2,
+  Run3  = results$DT_run3
+)
+
+print(dt_results_all)
+```
+
+
+### The decision tree models produced relatively consistent RMSE values across stocks, with only minor variation between runs. Run 1 and Run 3 produced identical results, indicating that the simplified feature set in Run 3 did not meaningfully change the structure or predictive output of the model.
+
+### Run 2, which included a lagged price change variable, showed slight differences in performance for some stocks. However, these improvements were small and not consistent across the dataset, suggesting limited predictive value from short-term momentum effects.
+
+### Plot Decision Trees
+```{r}
+dt_long <- pivot_longer(
+  subset(dt_results_all, stock != "CSCO"),
+  cols = c("Run1","Run2","Run3"),
+  names_to = "Model_Run",
+  values_to = "RMSE"
+)
+
+ggplot(dt_long, aes(x = stock, y = RMSE, fill = Model_Run)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Run1" = "steelblue", 
+                               "Run2" = "orange", 
+                               "Run3" = "darkgreen")) +
+  labs(title = "Decision Tree RMSE by Stock and Run",
+       x = "Stock", y = "RMSE", fill = "Run") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Compare LM & DT
+```{r}
+dt_lm_compare <- data.frame(
+  stock = stocks,
+  LM  = results$LM,
+  DT  = results$DT_run1
+)
+
+print(dt_lm_compare)
+
+dt_lm_long <- pivot_longer(
+  subset(dt_lm_compare, stock != "CSCO"),
+  cols = c("LM", "DT"),
+  names_to = "Model",
+  values_to = "RMSE"
+)
+
+ggplot(dt_lm_long, aes(x = stock, y = RMSE, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Linear Regression vs Decision Tree",
+       x = "Stock", y = "RMSE") +
+  theme_minimal()
+```
+
+# Methodology
+### Decision Tree Regression was applied as a nonlinear modeling technique to predict next week’s stock returns. Unlike linear regression, decision trees split the data into regions based on predictor thresholds, allowing them to capture nonlinear relationships and interactions between variables.
+### Three decision tree models were developed using different feature sets. Run 1 used the baseline predictors consistent with earlier models. Run 2 incorporated a lagged price change variable to capture potential momentum effects. Run 3 used a simplified feature set consisting of volume, closing price, and percent change in price to evaluate whether a more compact model could improve performance.
+
+### SVR
+
+### While the linear regression models provided a baseline for prediction, their performance was limited due to the weak linear relationships between predictors and future stock returns. To address this, more flexible modeling techniques were explored. In particular, Support Vector Regression (SVR) was implemented to capture potential nonlinear relationships and improve predictive accuracy.
+
+### SVR
+```{r}
+library(e1071)
+
+results$SVR_run1 <- NA
+results$SVR_run2 <- NA
+results$SVR_run3 <- NA
+
+for(i in seq_along(stocks)){
+  
+  stock_name <- stocks[i]
+  
+  train_stock <- subset(train_base, stock == stock_name)
+  test_stock  <- subset(test_base,  stock == stock_name)
+  
+  train_lag_s <- subset(train_lag, stock == stock_name)
+  test_lag_s  <- subset(test_lag,  stock == stock_name)
+  
+   # -------------------------
+  # RUN 1 (Baseline)
+  # -------------------------
+  
+  cols1 <- c("percent_change_price",
+             "percent_change_volume_over_last_wk",
+             "days_to_next_dividend",
+             "percent_return_next_dividend")
+  
+  # scale using training stats
+  means1 <- sapply(train_stock[, cols1], mean)
+  sds1   <- sapply(train_stock[, cols1], sd)
+  sds1[sds1 == 0] <- 1
+  
+  train_stock[, cols1] <- scale(train_stock[, cols1])
+  test_stock[, cols1]  <- sweep(test_stock[, cols1], 2, means1, "-")
+  test_stock[, cols1]  <- sweep(test_stock[, cols1], 2, sds1, "/")
+  
+  svr1 <- svm(percent_change_next_weeks_price ~ 
+                percent_change_price + percent_change_volume_over_last_wk + 
+                days_to_next_dividend + percent_return_next_dividend,
+              data = train_stock,
+              kernel = "radial")
+  
+  pred1 <- predict(svr1, test_stock)
+  
+  results$SVR_run1[i] <- sqrt(mean(
+    (test_stock$percent_change_next_weeks_price - pred1)^2,
+    na.rm = TRUE
+  ))
+  
+  
+  # -------------------------
+  # RUN 2 (With Lag)
+  # -------------------------
+  
+  cols2 <- c(cols1, "lag_percent_change_price")
+  
+  means2 <- sapply(train_lag_s[, cols2], mean)
+  sds2   <- sapply(train_lag_s[, cols2], sd)
+  sds2[sds2 == 0] <- 1
+  
+  train_lag_s[, cols2] <- scale(train_lag_s[, cols2])
+  test_lag_s[, cols2]  <- sweep(test_lag_s[, cols2], 2, means2, "-")
+  test_lag_s[, cols2]  <- sweep(test_lag_s[, cols2], 2, sds2, "/")
+  
+  svr2 <- svm(percent_change_next_weeks_price ~ 
+                percent_change_price + percent_change_volume_over_last_wk + 
+                days_to_next_dividend + percent_return_next_dividend + 
+                lag_percent_change_price,
+              data = train_lag_s,
+              kernel = "radial")
+  
+  pred2 <- predict(svr2, test_lag_s)
+  
+  results$SVR_run2[i] <- sqrt(mean(
+    (test_lag_s$percent_change_next_weeks_price - pred2)^2,
+    na.rm = TRUE
+  ))
+  
+  
+  # -------------------------
+  # RUN 3 (Alt Features)
+  # -------------------------
+  
+  cols3 <- c("volume", "close", "percent_change_price")
+  
+  means3 <- sapply(train_stock[, cols3], mean)
+  sds3   <- sapply(train_stock[, cols3], sd)
+  sds3[sds3 == 0] <- 1
+  
+  train_stock[, cols3] <- scale(train_stock[, cols3])
+  test_stock[, cols3]  <- sweep(test_stock[, cols3], 2, means3, "-")
+  test_stock[, cols3]  <- sweep(test_stock[, cols3], 2, sds3, "/")
+  
+  svr3 <- svm(percent_change_next_weeks_price ~ 
+                volume + close + percent_change_price,
+              data = train_stock,
+              kernel = "radial")
+  
+  pred3 <- predict(svr3, test_stock)
+  
+  results$SVR_run3[i] <- sqrt(mean(
+    (test_stock$percent_change_next_weeks_price - pred3)^2,
+    na.rm = TRUE
+  ))
+}
+```
+
+
+# SVR Results Table
+```{r}
+svr_results_all <- data.frame(
+  stock = stocks,
+  Run1  = results$SVR_run1,
+  Run2  = results$SVR_run2,
+  Run3  = results$SVR_run3
+)
+
+print(svr_results_all)
+```
+
+### Support Vector Regression (SVR) was used as an alternative modeling approach due to its ability to model nonlinear relationships and handle noisy data effectively. This is particularly important in financial datasets, where stock price movements are often volatile and not strictly linear.
+
+### Three SVR models were developed using different sets of predictors. Run 1 followed the baseline variables used in prior models, including percent change in price, change in trading volume, days to next dividend, and dividend return. Run 2 extended this model by incorporating a lagged variable representing the previous week’s price change, allowing the model to capture potential momentum or mean-reversion effects. Run 3 used a simplified feature set consisting of volume, closing price, and percent change in price to evaluate whether fewer, more direct indicators could improve performance.
+
+### To ensure consistency and prevent bias, all predictor variables were scaled using statistics derived from the training data before applying the SVR models to the test data.
+
+
+## SVR Visualization
+```{r}
+library(tidyr)
+library(ggplot2)
+
+svr_long <- pivot_longer(
+  subset(svr_results_all, stock != "CSCO"),
+  cols = c("Run1","Run2","Run3"),
+  names_to = "Model_Run",
+  values_to = "RMSE"
+)
+
+ggplot(svr_long, aes(x = stock, y = RMSE, fill = Model_Run)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Run1" = "steelblue", 
+                               "Run2" = "orange", 
+                               "Run3" = "darkgreen")) +
+  labs(title = "SVR RMSE by Stock and Run",
+       subtitle = "Comparison across feature sets",
+       x = "Stock", y = "RMSE", fill = "Model Run") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### The results of the SVR models showed that prediction accuracy varied across stocks, but overall improvements over the baseline linear regression model were modest. While SVR is capable of capturing nonlinear patterns, the relatively high RMSE values suggest that strong predictive relationships are not present in the data. Comparing the three runs, the inclusion of the lagged variable in Run 2 resulted in only slight improvements in some cases, indicating limited temporal dependence in weekly stock returns. Similarly, the simplified feature set in Run 3 did not consistently outperform the baseline model, suggesting that reducing model complexity does not significantly enhance predictive power in this context. These findings indicate that, although SVR provides a more flexible modeling framework, the underlying data does not contain strong signals that can be easily exploited for short-term prediction.
+
+### Compare LM vs SVR
+```{r}
+all_models <- data.frame(
+  stock = stocks,
+  LM    = results$LM,
+  SVR   = results$SVR_run1
+)
+
+print(all_models)
+```
+
+### Visualization
+```{r}
+all_long <- pivot_longer(
+  subset(all_models, stock != "CSCO"),
+  cols = c("LM","SVR"),
+  names_to = "Model",
+  values_to = "RMSE"
+)
+
+ggplot(all_long, aes(x = stock, y = RMSE, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("LM" = "steelblue", 
+                               "SVR" = "darkgreen")) +
+  labs(title = "Model Comparison: LM vs SVR (Run 1)",
+       x = "Stock", y = "RMSE", fill = "Model") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+###A direct comparison between linear regression and SVR revealed that SVR performed slightly better for certain stocks, highlighting its ability to capture nonlinear relationships. However, the overall differences in RMSE between the two models were relatively small. This suggests that while nonlinear modeling techniques like SVR can offer marginal improvements, they do not substantially overcome the inherent difficulty of predicting short-term stock price movements. Both models struggled to achieve consistently low prediction error across all stocks.
+
+### Average Performance
+```{r}
+colMeans(data.frame(
+  LM  = results$LM,
+  SVR = results$SVR_run1
+), na.rm = TRUE)
+```
+
+
+### Compare DT vs LM vs SVR
+```{r}
+final_compare <- data.frame(
+  stock = stocks,
+  LM    = results$LM,
+  DT    = results$DT_run1,
+  SVR   = results$SVR_run1
+)
+
+print(final_compare)
+```
+
+### Visualization
+```{r}
+final_long <- pivot_longer(
+  subset(final_compare, stock != "CSCO"),
+  cols = c("LM","DT","SVR"),
+  names_to = "Model",
+  values_to = "RMSE"
+)
+
+ggplot(final_long, aes(x = stock, y = RMSE, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Final Model Comparison: LM vs DT vs SVR",
+       x = "Stock", y = "RMSE") +
+  theme_minimal()
+```
+
+
+### The limited predictive performance observed across all models suggests that short-term stock returns are highly unpredictable. This is consistent with the Efficient Market Hypothesis, which states that publicly available information is already incorporated into stock prices. As a result, it is difficult for models based solely on historical data to generate reliable predictions of future returns.Additionally, the weak correlations observed between predictor variables and future price changes further support the conclusion that these features do not provide strong explanatory power for short-term market behavior.
+
+### In summary, the use of SVR provided a useful extension to the baseline linear regression models by introducing nonlinear modeling capabilities. However, the results indicate that even more advanced models offer only limited improvements in predictive accuracy. This highlights the challenges associated with forecasting stock prices and underscores the importance of considering market efficiency when evaluating model performance.
+
+### Future improvements could include hyperparameter tuning, additional feature engineering, or incorporating external market indicators to enhance predictive performance.
+
+### Makayla End
+
+```{r}
+#CAPM: calculate the market return for each date
+market_return<-dow|>
+  group_by(date)|>
+  summarize(mkt_return=mean(percent_change_price, na.rm=TRUE))
+#merging market returns back into main dataset
+dow_capm<-left_join(dow, market_return, by="date")
+#storing betas
+capm_results<-data.frame(
+  stock=stocks,
+  beta=NA
+)
+#calculating Beta in each stock
+for(i in seq_along(stocks)){
+  stock_name<-stocks[i]
+  stock_data<-subset(dow_capm, stock==stock_name)
+  #linear regression stock return vs market return
+  capm_model<-lm(percent_change_price ~ mkt_return, data=stock_data)
+  #storing beta coefficient
+  capm_results$beta[i]<-coef(capm_model)[2]
+}
+print(capm_results)
+```
+
+```{r}
+#categorizing stock by risk
+capm_results<-capm_results|>
+  mutate(Risk_Category=ifelse(beta>1, "High Risk", "Low Risk"))
+print(capm_results)
+```
+
+```{r}
+#Visualizing Betas
+ggplot(capm_results, aes(x=reorder(stock, beta), y=beta, fill=Risk_Category))+
+  geom_bar(stat="identity")+
+  coord_flip()+
+  geom_hline(yintercept=1, linetype="dashed", color="red")+
+  scale_fill_manual(values=c("High Risk"="darkred", "Low Risk"= "green"))+
+  labs(title="Stock Risk Analysis (CAPM Beta)",
+       subtitle="Beta > 1 indicates higher volatility than the Dow Jones average",
+       x="Stock Symbol", y="Beta Value")+
+  theme_minimal()
+```
+CAPM Analysis: (B>1=High Risk) CAT has the highest Beta at 1.82. Meaning that for every 1% the market moves, CAT historically moves 1.82%. This aligns with the SVR results, as high volatility stocks are generally harder to predict accurately. BA and INTC also show high sensitivity to market swings. 
+(B<1= Low Risk) KRFT and PG have very low Betas at 0.28 and 0.33. They don't drop as sharply during market downturns.
+
+The week of may 27, 2011 saw a universal decline across the Dow. The CAPM analysis explains the varying degrees of these losses. High risk stocks like CAT and BA were mathematically predisposed to experience sharper drops during this market-wide downturn compared to defensive stocks like IBM. 
+
+```{r}
+#Investigating the 5/27/2011 crash
+crash_week<-dow_capm|>
+  filter(date=="2011-05-27")|>
+  select(stock, percent_change_price, mkt_return)
+#merging with CAPM results
+crash_analysis<-left_join(crash_week, capm_results, by="stock")
+print(crash_analysis)
+```
+```{r}
+dow_capm$date<-as.Date(dow_capm$date)
+```
+
+```{r}
+#crash visualization
+dow_capm<-dow_capm|>
+  group_by(stock)|>
+  mutate(total_weekly_return=(close-open)/open)|>
+  mutate(is_crash=ifelse(date=="2011-05-27", "Crash Week(5/27)", "Normal Week"))
+ggplot(dow_capm, aes(x=mkt_return, y=total_weekly_return))+
+  geom_point(aes(color=is_crash, alpha=is_crash))+
+  geom_smooth(method="lm", se=FALSE, color="black", linetype="dashed")+
+  scale_color_manual(values=c("Crash Week(5/27)"="red", "Normal Week"="grey"))+
+  scale_alpha_manual(values=c("Crash Week(5/27)"=1, "Normal Week"=0.4))+
+  facet_wrap(~stock, scales="free_y")+
+  labs(title="Stock Returns vs. Market Returns (CAPM Visualized)",
+       subtitle="Red points = 5/27/2011 events",
+       x="Market Return (Dow Jones Average %)",
+       y="Individual Stock Return (%)")+
+  theme_minimal()+
+  theme(legend.position="bottom")
+```
+
+This graph shows us how unsystematic risk can override systematic expectations. while some stocks showed a positive movement during the week (percent_change_price) the total weekly return was negative for almost the entire index. CAT while being a high risk stock actually had less of a bad week in 5/27/2011 than the defensive stocks. CAPM predicted that the high-beta stocks like CAT drop more when the market is down. However, the week of 5/27/2011 was an anomaly. Investors solf off the defensive stocks (KO, PG, MRK) much more heavily than the "risky" industrial stocks (CAT, AA). This is likely why our Linear Regression and SVR models had such high RMSE for stocks like KRFT and MRK, because the modle expected these stocks to be stable, but they experienced a sudden, non-systematic drop that week. While CAT has the highest systematic risk, this data point shows that unsystematic risk can sometimes cause defensive stocks to underperform even when the broader market averages are relatively stable.
+
+
